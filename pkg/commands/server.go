@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/urfave/cli/v3"
 	bridgev1 "github.com/vercel/bridge/api/go/bridge/v1"
+	"github.com/vercel/bridge/pkg/fsmount"
 	"github.com/vercel/bridge/pkg/proxy"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -86,6 +88,18 @@ func runServer(ctx context.Context, c *cli.Command) error {
 				mountRoots = append(mountRoots, part)
 			}
 		}
+	}
+
+	// Auto-discover webhook-injected secret mounts (EKS Pod Identity,
+	// kube-api SA auto-mount, Azure Workload Identity, etc.) — they're
+	// added at pod-admission time and aren't reflected in the Deployment
+	// spec, so the --mount-roots argument from k8s/resources misses them.
+	discovered, err := fsmount.DiscoverSecretMounts()
+	if err != nil {
+		slog.Warn("Failed to discover secret mounts; webhook-injected projected volumes may be inaccessible", "error", err)
+	} else if len(discovered) > 0 {
+		slog.Info("Discovered webhook-injected secret mounts", "paths", discovered)
+		mountRoots = append(mountRoots, discovered...)
 	}
 
 	grpcServer := proxy.NewGRPCServer(proxy.Config{
